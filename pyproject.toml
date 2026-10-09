@@ -1,0 +1,112 @@
+[project]
+name = "pytrendclust"
+version = "0.1.0"
+description = "Trend clustering of time series with an adaptive number of clusters: split a series into rising, falling and flat runs with an exponentially growing penalty on change points"
+readme = "README.md"
+authors = [
+    { name = "Andrey Ferubko", email = "ferubko1999@yandex.ru" }
+]
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "time-series",
+    "clustering",
+    "trend",
+    "change-point",
+    "segmentation",
+    "piecewise-linear",
+    "regression",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+pandas = [
+    "pandas>=2.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/89605502155/pytrendclust"
+Repository = "https://github.com/89605502155/pytrendclust"
+Documentation = "https://github.com/89605502155/pytrendclust#readme"
+Issues = "https://github.com/89605502155/pytrendclust/issues"
+
+[build-system]
+requires = ["uv_build>=0.11.9,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.5",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "A", "C4", "EM", "ISC", "PIE", "PT", "RET", "SIM",
+          "TID", "T20", "PERF", "PL", "RUF", "S"]
+ignore = [
+    "PLR0913", # too many arguments: the constructor mirrors the documented parameters
+    "PLR2004", # magic values
+    "PLC0415", # imports inside functions keep optional dependencies optional
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "PLC0415", "N802", "S311", "RUF001", "RUF003"]
+"examples/**" = ["T20", "S101", "RUF001", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pytrendclust"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src", "README.md"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--doctest-modules", "--doctest-glob=README.md", "--import-mode=importlib"]
+doctest_optionflags = ["NORMALIZE_WHITESPACE", "ELLIPSIS"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["pytrendclust"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/pytrendclust"]
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["pandas", "pandas.*"]
+ignore_missing_imports = true
