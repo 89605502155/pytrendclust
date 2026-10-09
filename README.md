@@ -31,6 +31,7 @@ print(result.summary())
 #   #1: [7, 10)    3 pts  up    slope +1
 
 t_recent, y_recent = result.select()       # points of the last (newest) cluster
+t_fit, y_fit = result.select(level="piece")  # its last linear piece: train a regression here
 result.export("result.json")               # or "points.csv"
 ```
 
@@ -64,8 +65,8 @@ pen(K) = c · (exp(g·K) − 1) / (exp(g) − 1)
 ```
 
 * `c` (`penalty_scale`): price of the first change point in noise variances.
-  The default is `5·ln(n)`.
-* `g` (`penalty_growth`, default 0.5): each next change point costs `e^g`
+  The default is `6·ln(n)`.
+* `g` (`penalty_growth`, default 0.1): each next change point costs `e^g`
   times more than the previous one. `g = 0` gives the classic linear penalty.
 * `sigma` (`noise_std`): noise level. By default it is estimated robustly
   from second differences of the series, which cancel any linear trend. This
@@ -77,8 +78,13 @@ found. The exponential penalty makes this happen after a few steps. The
 solution is the global optimum of the criterion; the test suite checks it
 against brute-force enumeration.
 
-Each cluster is labelled `up`, `down` or `flat` with a t-test on its slope:
-`|slope| / se(slope) < flat_threshold` (default 2) means `flat`.
+Each linear piece is labelled `up`, `down` or `flat` with a t-test on its
+slope: `|slope| / se(slope) < flat_threshold` (default 2) means `flat`.
+Adjacent pieces with the same direction are then merged into one trend
+cluster, so cluster boundaries are exactly the changes of monotonicity. A
+noisy parabola needs several lines for its curved halves but gives two
+clusters. Flat pieces are never merged, so a step between two plateaus stays
+a boundary. `merge_same_trend=False` keeps every linear piece as a cluster.
 
 ## API
 
@@ -86,12 +92,12 @@ Each cluster is labelled `up`, `down` or `flat` with a t-test on its slope:
 |---|---|
 | `TrendClusterer(**params)` | set parameters; `fit(y, t=None)`, `fit_predict`, `get_params`, `set_params` |
 | `cluster_trends(y, t=None, **params)` | one-call shortcut returning the result |
-| `TrendClusteringResult` | `segments`, `change_points`, `labels`, `trends`, `fitted`, `last_segment`, `select()`, `indices()`, `criterion` |
+| `TrendClusteringResult` | `segments` (trend clusters), `pieces` (linear pieces), `change_points`, `labels`, `trends`, `fitted`, `last_segment`, `last_piece`, `select(level=...)`, `indices(level=...)`, `criterion` |
 | export | `to_dict()`, `to_json(path)`, `to_csv(path)`, `to_dataframe()`, `export(path)`; `from_dict`, `from_json` |
 
 Parameters: `penalty` (`"exponential"`, `"linear"`, `"none"`, or a callable
 `f(K, n, sigma²)`), `penalty_scale`, `penalty_growth`, `min_size` (default 3),
-`max_change_points`, `noise_std`, `flat_threshold`.
+`max_change_points`, `noise_std`, `flat_threshold`, `merge_same_trend`.
 
 `result.criterion` lists `SSE(K)`, the penalty and their sum for every `K` the
 search evaluated. Use it to justify the chosen number of clusters.

@@ -23,16 +23,16 @@ _MAD_TO_STD = 1.482602218505602
 
 
 def default_scale(n_samples: int) -> float:
-    """Default price of the first change point, in noise variances: ``5 * ln(n)``.
+    """Default price of the first change point, in noise variances: ``6 * ln(n)``.
 
-    Every extra segment costs three parameters — slope, intercept and the
-    position of its start — for which BIC would charge ``3 * ln(n)``.  BIC is
-    too liberal here: the start position is chosen as the best of ``n``
-    candidates, so on pure noise it finds a spurious short trend in ~7 % of
-    100-point series, against ~0.5 % with ``5 * ln(n)`` at the same detection
-    rate of real breaks.
+    BIC would charge ``ln(n)`` per parameter.  A change point is dearer than a
+    parameter: its position is the best of ``n`` candidates, and a monotone fit
+    adapts to noise more than a line does.  The constant 6 was chosen on
+    simulated series (see the accompanying article): with it a spurious change
+    point appears on pure noise in about 2 % of 100-point series, while noisy
+    parabolas, V-shapes and five-period sine waves are segmented correctly.
     """
-    return 5.0 * math.log(max(n_samples, 2))
+    return 6.0 * math.log(max(n_samples, 2))
 
 
 def exponential_penalty(n_change_points: int, scale: float, growth: float) -> float:

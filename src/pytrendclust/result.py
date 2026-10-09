@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,7 +16,10 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     import pandas as pd
 
-FORMAT_VERSION = 1
+Level = Literal["cluster", "piece"]
+
+FORMAT_VERSION = 2
+_READABLE_VERSIONS = (1, 2)
 
 
 class Trend(StrEnum):
@@ -93,8 +96,11 @@ class CriterionRow:
 class TrendClusteringResult:
     """Which point belongs to which trend cluster, plus everything needed to audit it.
 
-    ``segments`` are ordered in time and cover the series without gaps;
-    ``segments[-1]`` is the most recent regime — the one to train a regression on.
+    ``segments`` are the trend clusters: ordered in time, covering the series
+    without gaps, each with one character of monotonicity.  ``segments[-1]`` is
+    the most recent regime, the one to train a regression on.  ``pieces`` are
+    the linear pieces found by the penalised segmentation before adjacent
+    pieces with the same direction were merged into clusters.
     """
 
     t: NDArray[np.float64]
@@ -103,8 +109,14 @@ class TrendClusteringResult:
     noise_std: float
     #: Criterion for every number of change points the search evaluated.
     criterion: tuple[CriterionRow, ...]
+    #: Linear pieces before merging; empty means "same as ``segments``".
+    pieces: tuple[Segment, ...] = ()
     #: Parameters of the :class:`~pytrendclust.TrendClusterer` that produced this result.
     params: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.pieces:
+            object.__setattr__(self, "pieces", self.segments)
 
     # -- structure ---------------------------------------------------------
 
@@ -139,30 +151,57 @@ class TrendClusteringResult:
 
     @property
     def fitted(self) -> NDArray[np.float64]:
-        """Piecewise-linear fit: every point's value on its own segment's line."""
-        return np.concatenate([s.predict(self.t[s.start : s.stop]) for s in self.segments])
+        """Piecewise-linear fit: every point's value on the line of its own piece."""
+        return np.concatenate([s.predict(self.t[s.start : s.stop]) for s in self.pieces])
+
+    @property
+    def piece_labels(self) -> NDArray[np.int64]:
+        """Index of the linear piece every point belongs to."""
+        return np.repeat(
+            np.arange(len(self.pieces), dtype=np.int64), [s.n_points for s in self.pieces]
+        )
 
     @property
     def last_segment(self) -> Segment:
-        """The most recent regime of the series."""
+        """The most recent trend cluster of the series."""
         return self.segments[-1]
 
     @property
+    def last_piece(self) -> Segment:
+        """The most recent linear piece: the tail of :attr:`last_segment` with one slope."""
+        return self.pieces[-1]
+
+    @property
     def objective(self) -> float:
-        """Value of the penalised criterion at the chosen segmentation."""
-        chosen = self.n_change_points
+        """Value of the penalised criterion at the chosen segmentation (of ``pieces``)."""
+        chosen = len(self.pieces) - 1
         return next(r.objective for r in self.criterion if r.n_change_points == chosen)
 
     # -- selection ---------------------------------------------------------
 
-    def indices(self, segment: int = -1) -> NDArray[np.int64]:
-        """Indices of the points of one segment; the last one by default."""
-        s = self.segments[segment]
+    def _pick(self, segment: int, level: Level) -> Segment:
+        if level == "cluster":
+            return self.segments[segment]
+        if level == "piece":
+            return self.pieces[segment]
+        msg = f"level must be 'cluster' or 'piece', got {level!r}"
+        raise ValueError(msg)
+
+    def indices(self, segment: int = -1, *, level: Level = "cluster") -> NDArray[np.int64]:
+        """Indices of the points of one cluster (or linear piece); the last one by default."""
+        s = self._pick(segment, level)
         return np.arange(s.start, s.stop, dtype=np.int64)
 
-    def select(self, segment: int = -1) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """``(t, y)`` of one segment's points; the last (most recent) one by default."""
-        s = self.segments[segment]
+    def select(
+        self, segment: int = -1, *, level: Level = "cluster"
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """``(t, y)`` of one cluster (or linear piece); the last (most recent) one by default.
+
+        To train a linear regression on the current regime, ``level="piece"``
+        is usually the better choice: a trend cluster may join pieces of one
+        direction but different slopes, while the last piece follows one line.
+        """
+        s = self._pick(segment, level)
         return self.t[s.start : s.stop].copy(), self.y[s.start : s.stop].copy()
 
     # -- export ------------------------------------------------------------
@@ -179,6 +218,7 @@ class TrendClusteringResult:
             "objective": self.objective,
             "params": self.params,
             "segments": [s.to_dict() for s in self.segments],
+            "pieces": [s.to_dict() for s in self.pieces],
             "criterion": [
                 {
                     "n_change_points": r.n_change_points,
@@ -196,7 +236,7 @@ class TrendClusteringResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrendClusteringResult:
         """Rebuild a result exported with ``to_dict(include_points=True)``."""
-        if data.get("format_version") != FORMAT_VERSION:
+        if data.get("format_version") not in _READABLE_VERSIONS:
             msg = f"unsupported format_version: {data.get('format_version')!r}"
             raise ValueError(msg)
         if "points" not in data:
@@ -211,6 +251,7 @@ class TrendClusteringResult:
                 CriterionRow(int(r["n_change_points"]), float(r["sse"]), float(r["penalty"]))
                 for r in data["criterion"]
             ),
+            pieces=tuple(Segment.from_dict(s) for s in data.get("pieces", ())),
             params=dict(data["params"]),
         )
 
@@ -230,8 +271,9 @@ class TrendClusteringResult:
         return cls.from_dict(json.loads(text))
 
     def point_table(self) -> list[dict[str, Any]]:
-        """One row per point: index, t, y, segment, trend, fitted value, residual."""
+        """One row per point: index, t, y, cluster, trend, piece, fitted value, residual."""
         labels = self.labels
+        pieces = self.piece_labels
         trends = self.trends
         fitted = self.fitted
         return [
@@ -241,6 +283,7 @@ class TrendClusteringResult:
                 "y": float(self.y[i]),
                 "segment": int(labels[i]),
                 "trend": trends[i].value,
+                "piece": int(pieces[i]),
                 "fitted": float(fitted[i]),
                 "residual": float(self.y[i] - fitted[i]),
                 "is_last_segment": bool(labels[i] == self.n_segments - 1),

@@ -1,6 +1,6 @@
 [project]
 name = "pytrendclust"
-version = "0.1.0"
+version = "0.2.0"
 description = "Trend clustering of time series with an adaptive number of clusters: split a series into rising, falling and flat runs with an exponentially growing penalty on change points"
 readme = "README.md"
 authors = [

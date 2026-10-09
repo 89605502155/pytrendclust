@@ -31,8 +31,8 @@ _NOISE_FLOOR = 1e-6
 class TrendClusterer:
     """Split a time series into consecutive trend clusters (rising, falling, flat).
 
-    Each cluster is a contiguous run of points with its own least-squares line.
-    The number of clusters is not given in advance: the clusterer minimises
+    The series is first cut into linear pieces, each with its own least-squares
+    line.  The number of pieces is not given in advance: the clusterer minimises
 
         SSE(K) + sigma**2 * penalty(K)
 
@@ -42,6 +42,13 @@ class TrendClusterer:
     extra change point dearer than the previous one, so noise such as a
     "picket fence" (up, down, up, down, ...) is recognised as a single flat
     cluster instead of ten tiny trends.
+
+    Every piece is then labelled rising, falling or flat, and adjacent pieces
+    with the same direction are merged into one trend cluster: a cluster is a
+    maximal run with one character of monotonicity.  A noisy parabola thus
+    gives two clusters, even though its curved halves need several lines.
+    Flat pieces are never merged, so a step between two plateaus stays a
+    boundary.
 
     Parameters
     ----------
@@ -54,10 +61,11 @@ class TrendClusterer:
         the penalty in the units of SSE, non-decreasing in ``n_change_points``.
     penalty_scale:
         Price of the first change point in noise variances.  Defaults to
-        ``5 * ln(n)`` (see :func:`~pytrendclust.default_scale`).  Larger means
+        ``6 * ln(n)`` (see :func:`~pytrendclust.default_scale`).  Larger means
         fewer change points.
     penalty_growth:
-        Exponential growth rate of the price of every next change point.
+        Exponential growth rate of the price of every next change point: the
+        ``K``-th one costs ``exp(penalty_growth * (K - 1))`` times the first.
     min_size:
         Minimum number of points in a cluster; at least 2 (a line needs two
         points, and three are needed before a line can be wrong).
@@ -69,6 +77,10 @@ class TrendClusterer:
     flat_threshold:
         A cluster is ``flat`` when ``|slope| / standard_error(slope)`` is below
         this value (2 is roughly the 95 % significance level).
+    merge_same_trend:
+        Merge adjacent rising (falling) pieces into one cluster, so that cluster
+        boundaries are exactly the changes of monotonicity.  ``False`` keeps
+        every linear piece as a cluster of its own.
 
     Examples
     --------
@@ -87,11 +99,12 @@ class TrendClusterer:
         *,
         penalty: PenaltyKind | PenaltyFunc = "exponential",
         penalty_scale: float | None = None,
-        penalty_growth: float = 0.5,
+        penalty_growth: float = 0.1,
         min_size: int = 3,
         max_change_points: int | None = None,
         noise_std: float | None = None,
         flat_threshold: float = 2.0,
+        merge_same_trend: bool = True,
     ) -> None:
         self.penalty = penalty
         self.penalty_scale = penalty_scale
@@ -100,6 +113,7 @@ class TrendClusterer:
         self.max_change_points = max_change_points
         self.noise_std = noise_std
         self.flat_threshold = flat_threshold
+        self.merge_same_trend = merge_same_trend
         self._validate()
         self.result_: TrendClusteringResult | None = None
 
@@ -113,6 +127,7 @@ class TrendClusterer:
         "max_change_points",
         "noise_std",
         "flat_threshold",
+        "merge_same_trend",
     )
 
     def get_params(self) -> dict[str, Any]:
@@ -176,6 +191,9 @@ class TrendClusterer:
         if not (math.isfinite(self.flat_threshold) and self.flat_threshold >= 0):
             msg = f"flat_threshold must be a finite number >= 0, got {self.flat_threshold!r}"
             raise ValueError(msg)
+        if not isinstance(self.merge_same_trend, bool):
+            msg = f"merge_same_trend must be a bool, got {self.merge_same_trend!r}"
+            raise ValueError(msg)
 
     # -- fitting -----------------------------------------------------------
 
@@ -197,14 +215,16 @@ class TrendClusterer:
         seg = segment(LinearCost(t_arr, y_arr), n, self.min_size, max(largest_k, 0), penalty)
 
         bounds = [0, *seg.change_points, n]
-        segments = tuple(
+        pieces = tuple(
             self._describe(index=i, start=start, stop=stop, t=t_arr, y=y_arr, sigma=sigma)
             for i, (start, stop) in enumerate(itertools.pairwise(bounds))
         )
+        segments = self._merge(pieces, t_arr, y_arr, sigma) if self.merge_same_trend else pieces
         self.result_ = TrendClusteringResult(
             t=t_arr,
             y=y_arr,
             segments=segments,
+            pieces=pieces,
             noise_std=sigma,
             criterion=seg.criterion,
             params=self._exportable_params(),
@@ -234,6 +254,34 @@ class TrendClusterer:
         growth = self.penalty_growth
         return lambda k: sigma2 * exponential_penalty(k, scale, growth)
 
+    def _merge(
+        self,
+        pieces: tuple[Segment, ...],
+        t: NDArray[np.float64],
+        y: NDArray[np.float64],
+        sigma: float,
+    ) -> tuple[Segment, ...]:
+        """Join adjacent rising (or falling) pieces into one trend cluster each."""
+        groups: list[list[Segment]] = []
+        for piece in pieces:
+            last = groups[-1][-1] if groups else None
+            if last is not None and piece.trend is last.trend and piece.trend is not Trend.FLAT:
+                groups[-1].append(piece)
+            else:
+                groups.append([piece])
+        return tuple(
+            self._describe(
+                index=i,
+                start=group[0].start,
+                stop=group[-1].stop,
+                t=t,
+                y=y,
+                sigma=sigma,
+                trend=group[0].trend,
+            )
+            for i, group in enumerate(groups)
+        )
+
     def _describe(
         self,
         *,
@@ -243,7 +291,9 @@ class TrendClusterer:
         t: NDArray[np.float64],
         y: NDArray[np.float64],
         sigma: float,
+        trend: Trend | None = None,
     ) -> Segment:
+        """Line fit and trend of ``[start, stop)``; ``trend`` overrides the t-test."""
         line = fit_line(t[start:stop], y[start:stop])
         if line.stt == 0.0 or line.slope == 0.0:
             t_stat = 0.0
@@ -251,10 +301,11 @@ class TrendClusterer:
             t_stat = math.inf
         else:
             t_stat = abs(line.slope) * math.sqrt(line.stt) / sigma
-        if t_stat < self.flat_threshold:
-            trend = Trend.FLAT
-        else:
-            trend = Trend.UP if line.slope > 0 else Trend.DOWN
+        if trend is None:
+            if t_stat < self.flat_threshold:
+                trend = Trend.FLAT
+            else:
+                trend = Trend.UP if line.slope > 0 else Trend.DOWN
         return Segment(
             index=index,
             start=start,

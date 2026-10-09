@@ -68,6 +68,43 @@ def test_level_shift_between_two_flat_regimes():
     assert result.change_points == [50]
 
 
+def test_parabola_is_two_clusters_although_it_needs_more_lines():
+    rng = np.random.default_rng(4)
+    t = np.arange(80)
+    y = 0.02 * (t - 50.0) ** 2 + rng.normal(0, 0.5, 80)
+    result = cluster_trends(y)
+    assert len(result.pieces) > 2
+    assert trends(result) == [Trend.DOWN, Trend.UP]
+    assert abs(result.change_points[0] - 50) <= 4
+
+
+def test_merging_can_be_switched_off():
+    rng = np.random.default_rng(4)
+    t = np.arange(80)
+    y = 0.02 * (t - 50.0) ** 2 + rng.normal(0, 0.5, 80)
+    result = cluster_trends(y, merge_same_trend=False)
+    assert result.segments == result.pieces
+    assert result.n_segments > 2
+
+
+def test_sine_is_told_apart_from_the_fence():
+    rng = np.random.default_rng(0)
+    t = np.arange(300)
+    sine = cluster_trends(np.sin(2 * np.pi * 5 * t / 300) + rng.normal(0, 0.15, 300))
+    directed = [s.trend for s in sine.segments if s.trend is not Trend.FLAT]
+    # 5 periods from phase 0: a quarter up, 9 half-periods, a quarter up = 11 runs.
+    assert len(directed) == 11
+    assert all(a is not b for a, b in itertools.pairwise(directed))
+    fence = cluster_trends(np.tile([0.0, 1.0], 150) + rng.normal(0, 0.05, 300))
+    assert trends(fence) == [Trend.FLAT]
+
+
+def test_flat_pieces_are_never_merged():
+    y = np.r_[np.full(30, 1.0), np.full(30, 5.0)]
+    result = cluster_trends(y + np.random.default_rng(1).normal(0, 0.2, 60))
+    assert trends(result) == [Trend.FLAT, Trend.FLAT]
+
+
 def test_result_is_invariant_to_units():
     rng = np.random.default_rng(5)
     y = np.r_[np.linspace(10, 0, 60), np.linspace(0, 8, 40)] + rng.normal(0, 0.7, 100)
@@ -165,10 +202,9 @@ def test_dynamic_programme_finds_the_global_optimum(values, min_size, scale):
     expected = brute_force_objective(y, min_size, clusterer._penalty_in_sse_units(len(y), 1.0))
     assert result.objective == pytest.approx(expected, abs=1e-7)
     # The reported objective is the actual cost of the reported segmentation.
-    sse = sum(s.sse for s in result.segments)
-    assert result.objective == pytest.approx(
-        sse + clusterer._penalty_in_sse_units(len(y), 1.0)(result.n_change_points), abs=1e-7
-    )
+    pen = clusterer._penalty_in_sse_units(len(y), 1.0)
+    sse = sum(s.sse for s in result.pieces)
+    assert result.objective == pytest.approx(sse + pen(len(result.pieces) - 1), abs=1e-7)
 
 
 @settings(max_examples=50, deadline=None)
@@ -239,6 +275,7 @@ def test_bad_input_is_rejected(y, t, message):
         {"max_change_points": -1},
         {"noise_std": -0.1},
         {"flat_threshold": math.inf},
+        {"merge_same_trend": 1},
     ],
 )
 def test_bad_parameters_are_rejected(params):
