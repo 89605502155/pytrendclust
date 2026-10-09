@@ -120,6 +120,15 @@ uv run mypy
 uv build
 ```
 
+## Authors
+
+* A. O. Ferubko (А. О. Ферубко)
+* O. D. Kazakov (О. Д. Казаков), scientific advisor
+
+Bryansk State Engineering-Technological University (BGITU),
+Bryansk, Russia — ФГБОУ ВО «Брянский государственный
+инженерно-технологический университет».
+
 ## License
 
 MIT, see [LICENSE](https://github.com/89605502155/pytrendclust/blob/main/LICENSE).
