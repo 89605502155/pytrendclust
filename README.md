@@ -131,7 +131,7 @@ uv build
 * A. O. Ferubko (А. О. Ферубко)
 * O. D. Kazakov (О. Д. Казаков), scientific advisor
 
-Bryansk State Engineering-Technological University (BGITU),
+Bryansk State Technological University of Engineering (BGITU),
 Bryansk, Russia — ФГБОУ ВО «Брянский государственный
 инженерно-технологический университет».
 
